@@ -1,5 +1,5 @@
 """
-Victor's Company Farmer — Single File Python
+Victor's Company Farmer — Single File Python (Chromium version)
 
 Commands:
   python vic.py              → Auto farmer (initData → get pass → mining → loop)
@@ -32,6 +32,7 @@ from rich import box
 from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 from telethon.tl.functions.messages import RequestWebViewRequest
+from telethon.tl.functions.channels import JoinChannelRequest
 from telethon.tl.types import KeyboardButtonWebView
 
 
@@ -44,11 +45,11 @@ CONFIG_PATH = BASE_DIR / "config.json"
 SESSIONS_DIR = BASE_DIR / "sessions"
 DATA_DIR = BASE_DIR / "data"
 LOG_PATH = BASE_DIR / "error.log"
-CHROME_PROFILES_DIR = BASE_DIR / "chrome-profiles"
+BROWSER_PROFILES_DIR = BASE_DIR / "chromium-profiles"
 
 SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-CHROME_PROFILES_DIR.mkdir(parents=True, exist_ok=True)
+BROWSER_PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # =====================================================================
@@ -75,7 +76,7 @@ def setup_logger() -> logging.Logger:
 
 LOGGER = setup_logger()
 LOGGER.info("=" * 70)
-LOGGER.info("Victor's Company Farmer dimulai")
+LOGGER.info("Victor's Company Farmer (Chromium) dimulai")
 
 
 def log_info(account_id: str, message: str):
@@ -120,7 +121,7 @@ DEFAULT_CONFIG = {
         "expiry_margin_seconds": 600,
         "auto_refresh_threshold_hours": 3,
     },
-    "mining": {"minimum_claimable": 5.0},
+    "mining": {"minimum_claimable": 1.0},
     "tasks": {"dwell_seconds_min": 11, "dwell_seconds_max": 15},
     "withdrawal": {
         "minimum_default": 1000,
@@ -156,9 +157,6 @@ def load_config() -> dict:
         print("=" * 80)
         print("config.json belum ada — sudah dibuat otomatis.")
         print(f"Lokasi: {CONFIG_PATH}")
-        print()
-        print("⚠️  WAJIB: isi telegram.api_id dan telegram.api_hash")
-        print("   Ambil dari https://my.telegram.org → API development tools")
         print("=" * 80)
         sys.exit(0)
     try:
@@ -250,44 +248,22 @@ def get_turnstile_semaphore() -> asyncio.Semaphore:
 
 
 # =====================================================================
-# CHROME FINDER + WINDOW CONTROL
+# WINDOW CONTROL + TASK RESET
 # =====================================================================
 
-def find_chrome_exe() -> str | None:
-    candidates = [
-        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
-        "/usr/bin/google-chrome",
-        "/usr/bin/chromium",
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    ]
-    for p in candidates:
-        if Path(p).exists():
-            return p
-    return None
-
-
 def find_next_task_reset(result_tasks: dict) -> int:
-    """
-    Cari waktu (unix timestamp) kapan task berikutnya reset.
-    Return 0 kalau tidak ada task cooldown.
-    """
     if not isinstance(result_tasks, dict):
         return 0
-
     tasks = result_tasks.get("tasks", [])
     if not tasks:
         return 0
-
     now = time.time()
     earliest = None
-
     for task in tasks:
         available = task.get("availableAt")
         if not available:
             continue
         try:
-            # Format ISO: "2026-10-05T06:22:02.266Z"
             dt = datetime.fromisoformat(available.replace("Z", "+00:00"))
             ts = dt.timestamp()
             if ts > now:
@@ -295,15 +271,10 @@ def find_next_task_reset(result_tasks: dict) -> int:
                     earliest = ts
         except Exception:
             continue
-
     return int(earliest) if earliest else 0
 
 
 def _initdata_age_minutes(init_data: str) -> int:
-    """Cari umur initData — dari file .initdata metadata, atau dari parse."""
-    # Kita tidak bisa tahu persis dari string initData saja,
-    # karena Telegram tidak sertakan timestamp di initData.
-    # Jadi kita pakai dari file metadata — kalau tidak ada, return 0.
     for p in SESSIONS_DIR.glob("*.initdata"):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
@@ -315,8 +286,8 @@ def _initdata_age_minutes(init_data: str) -> int:
             continue
     return 0
 
-def minimize_windows_chrome(keyword: str = "victors") -> bool:
-    """Minimize window Chrome berdasarkan judul. Hanya Windows."""
+
+def minimize_windows_browser(keyword: str = "victors") -> bool:
     import platform
     if platform.system() != "Windows":
         return False
@@ -354,7 +325,6 @@ def minimize_windows_chrome(keyword: str = "victors") -> bool:
 
 
 def get_launch_args() -> list:
-    """Bangun argumen Chrome berdasarkan window_mode."""
     args = [
         "--disable-blink-features=AutomationControlled",
         "--no-first-run",
@@ -462,7 +432,7 @@ def find_miner_level_for_holding(holding, wallet_connected: bool = True) -> int:
 
 
 # =====================================================================
-# DASHBOARD — 1 panel, akun dipisah garis
+# DASHBOARD
 # =====================================================================
 
 SLOTS = ["ACCOUNT", "AUTH", "MINING", "TASK", "SQUAD", "WITHDRAW"]
@@ -619,7 +589,7 @@ class StateManager:
 
 
 # =====================================================================
-# TURNSTILE SOLVER — PERSIS SEPERTI pass-all (default desktop Chrome)
+# TURNSTILE SOLVER — Chromium bundled
 # =====================================================================
 
 class TurnstileSolver:
@@ -653,49 +623,35 @@ class TurnstileSolver:
             return await self._solve_inner()
 
     async def _solve_inner(self):
-        """Launch Chrome — PERSIS seperti pass-all yang berhasil."""
         try:
             async_playwright, lib_name = await self._load_playwright()
         except RuntimeError as e:
             log_error(self.account_id, "Load playwright gagal", e)
             raise
 
-        chrome_exe = find_chrome_exe()
-        profile_dir = CHROME_PROFILES_DIR / f"{self.account_id}_farmer"
+        profile_dir = BROWSER_PROFILES_DIR / f"{self.account_id}_farmer"
         profile_dir.mkdir(parents=True, exist_ok=True)
 
         async with async_playwright() as p:
             try:
-                if chrome_exe:
-                    # ⭐ PERSIS SEPERTI get_pass_mode:
-                    # - default desktop Chrome
-                    # - TANPA viewport / user_agent / is_mobile / has_touch
-                    context = await p.chromium.launch_persistent_context(
-                        user_data_dir=str(profile_dir),
-                        executable_path=chrome_exe,
-                        headless=self.headless,
-                        args=get_launch_args(),
-                    )
-                    browser = None
-                else:
-                    browser = await p.chromium.launch(
-                        headless=self.headless,
-                        args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
-                    )
-                    context = await browser.new_context()
+                context = await p.chromium.launch_persistent_context(
+                    user_data_dir=str(profile_dir),
+                    headless=self.headless,
+                    args=get_launch_args(),
+                )
+                browser = None
             except Exception as e:
                 log_error(self.account_id, "Launch browser gagal", e)
                 raise
 
             page = await context.new_page()
 
-            # Auto minimize (kalau mode = minimize)
             if TURNSTILE_WINDOW_MODE == "minimize" and not self.headless:
                 await asyncio.sleep(1.5)
-                minimize_windows_chrome()
-                minimize_windows_chrome("victors")
+                minimize_windows_browser()
+                minimize_windows_browser("victors")
+                minimize_windows_browser("chromium")
 
-            # Intercept X-Human-Pass
             captured = {"human_pass": None}
 
             async def on_request(request):
@@ -724,13 +680,12 @@ class TurnstileSolver:
             except Exception as e:
                 log_warn(self.account_id, f"Goto gagal: {e}")
 
-            # Minimize lagi setelah goto
             if TURNSTILE_WINDOW_MODE == "minimize" and not self.headless:
                 await asyncio.sleep(1)
-                minimize_windows_chrome("app.victors.company")
-                minimize_windows_chrome("victors")
+                minimize_windows_browser("app.victors.company")
+                minimize_windows_browser("victors")
+                minimize_windows_browser("chromium")
 
-            # Tunggu dashboard / intercept
             start = time.time()
             while time.time() - start < 40:
                 if captured["human_pass"]:
@@ -749,7 +704,6 @@ class TurnstileSolver:
                     pass
                 await asyncio.sleep(1)
 
-            # Auto-click menu untuk trigger /api/me
             if not captured["human_pass"]:
                 positions = [
                     (206, 850), (206, 800), (100, 850),
@@ -865,10 +819,8 @@ class VictorsClient:
         self.tg_id: int | None = None
         self.state: dict = {}
         self.state_read_at: float = 0
+        self._joined_channels = set()
 
-    # ------------------------------------------------------------------
-    # HUMAN PASS CACHE
-    # ------------------------------------------------------------------
     def _pass_cache_path(self) -> Path:
         return SESSIONS_DIR / f"{self.account_id}.pass"
 
@@ -876,23 +828,19 @@ class VictorsClient:
         return SESSIONS_DIR / f"{self.account_id}.initdata"
 
     def _load_cached_initdata(self) -> str | None:
-        """Return initData kalau masih fresh (< 50 menit). None kalau expired/tidak ada."""
         p = self._initdata_cache_path()
         if not p.exists():
             return None
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
-            # Format baru (dict)
             if isinstance(data, dict):
                 init_data = data.get("initData")
                 fetched_at = int(data.get("fetchedAt", 0))
                 if not init_data:
                     return None
-                # initData valid ~1 jam, kita anggap 50 menit
                 if time.time() - fetched_at > 50 * 60:
                     return None
                 return init_data
-            # Format lama (string langsung) — anggap expired
             return None
         except Exception:
             return None
@@ -929,9 +877,6 @@ class VictorsClient:
         except Exception:
             pass
 
-    # ------------------------------------------------------------------
-    # TELEGRAM
-    # ------------------------------------------------------------------
     async def connect(self, require_login=True) -> bool:
         model, code, android, _ = get_device(self.account_id)
         self.tg = TelegramClient(
@@ -1005,9 +950,6 @@ class VictorsClient:
                 pass
             self.tg = None
 
-    # ------------------------------------------------------------------
-    # FETCH INIT DATA
-    # ------------------------------------------------------------------
     async def fetch_webapp_query(self) -> str:
         if not self.tg:
             raise RuntimeError("Telegram belum connect")
@@ -1091,6 +1033,48 @@ class VictorsClient:
         return raw
 
     # ------------------------------------------------------------------
+    # AUTO JOIN TELEGRAM CHANNEL
+    # ------------------------------------------------------------------
+    async def join_telegram_channel(self, channel_url: str) -> bool:
+        if not self.tg:
+            return False
+
+        # Extract username dari URL
+        # https://t.me/grmdrop → grmdrop
+        # https://t.me/victors_company/37 → victors_company
+        try:
+            path = channel_url.rstrip("/").split("/")
+            username = None
+            for part in path:
+                if part and part != "t.me" and not part.startswith("http") and not part.startswith("?"):
+                    username = part
+                    break
+            if not username or username.startswith("+"):
+                return False
+        except Exception:
+            return False
+
+        # Skip kalau sudah pernah join di sesi ini
+        if username in self._joined_channels:
+            return True
+
+        try:
+            entity = await self.tg.get_entity(username)
+            await self.tg(JoinChannelRequest(entity))
+            self._joined_channels.add(username)
+            log_info(self.account_id, f"Joined @{username}")
+            await asyncio.sleep(2)
+            return True
+        except Exception as e:
+            err = str(e).lower()
+            if "already" in err or "participant" in err or "user already" in err:
+                self._joined_channels.add(username)
+                log_info(self.account_id, f"Sudah join @{username}")
+                return True
+            log_warn(self.account_id, f"Gagal join @{username}: {e}")
+            return False
+
+    # ------------------------------------------------------------------
     # HUMAN PASS
     # ------------------------------------------------------------------
     def _parse_human_pass(self, token: str):
@@ -1111,7 +1095,6 @@ class VictorsClient:
 
         await activity(self.account_id, "AUTH", "RUNNING", "Auto get pass...")
 
-        # Panggil get_pass_mode — fungsi yang sama seperti pass-all
         try:
             await get_pass_mode(self.account_id)
         except SystemExit:
@@ -1120,7 +1103,6 @@ class VictorsClient:
             log_error(self.account_id, "Get pass gagal", e)
             raise
 
-        # Setelah get_pass_mode, .pass sudah tersimpan — baca dari cache
         cached = self._load_cached_pass()
         if cached:
             self.api.human_pass = cached
@@ -1128,9 +1110,6 @@ class VictorsClient:
         else:
             raise RuntimeError("Pass tidak tersimpan setelah get_pass_mode")
 
-    # ------------------------------------------------------------------
-    # LOGIN
-    # ------------------------------------------------------------------
     async def login(self):
         raw = await self.fetch_webapp_query()
         await activity(self.account_id, "AUTH", "SAVED",
@@ -1153,18 +1132,12 @@ class VictorsClient:
             self.state = result["state"]
             self.state_read_at = datetime.now().timestamp()
 
-    # ------------------------------------------------------------------
-    # STATE GETTERS
-    # ------------------------------------------------------------------
     def user(self): return self.state.get("user", {})
     def mining(self): return self.state.get("mining", {})
     def verify(self): return self.state.get("verify", {})
     def config(self): return self.state.get("config", {})
     def referral(self): return self.state.get("referral", {})
 
-    # ------------------------------------------------------------------
-    # MINING
-    # ------------------------------------------------------------------
     def get_mined_amount(self) -> Decimal:
         mining = self.mining()
         accrued = Decimal(str(mining.get("accrued", 0)))
@@ -1202,9 +1175,6 @@ class VictorsClient:
         claimed = result.get("claimed", pending)
         await activity(self.account_id, "MINING", "SUCCESS", f"+{claimed} VIC")
 
-    # ------------------------------------------------------------------
-    # DAILY
-    # ------------------------------------------------------------------
     async def complete_tutorial(self):
         if self.user().get("tutorialDone"):
             return
@@ -1226,9 +1196,6 @@ class VictorsClient:
         await activity(self.account_id, "TASK", "SUCCESS",
                        f"Check-in Day {result.get('streak')} +{result.get('reward')} VIC")
 
-    # ------------------------------------------------------------------
-    # TASK
-    # ------------------------------------------------------------------
     def _is_task_qualified(self, task: dict) -> bool:
         user = self.user()
         kind = task.get("kind")
@@ -1244,50 +1211,76 @@ class VictorsClient:
         return True
 
     async def complete_tasks(self) -> int:
-        """
-        Klaim task yang open. Return unix timestamp kapan task berikutnya reset.
-        Return 0 kalau tidak ada.
-        """
         result = await self.api.get("/tasks", human_solver=self.obtain_human_pass)
-        tasks_data = result  # simpan full response
-        tasks = [t for t in result.get("tasks", [])
+        tasks_data = result
+        all_tasks = result.get("tasks", [])
+        tasks = [t for t in all_tasks
                  if t.get("status") == "open" and self._is_task_qualified(t)]
 
         next_reset = find_next_task_reset(tasks_data)
 
+        log_info(self.account_id, f"Task board: {len(all_tasks)} task total")
+        for t in all_tasks:
+            status = t.get("status", "?")
+            title = t.get("title", "?").strip()
+            reward = t.get("reward", 0)
+            available = t.get("availableAt") or "-"
+            log_info(self.account_id,
+                     f"  [{status:9}] {title} (+{reward} VIC) reset={available}")
+
         if not tasks:
+            log_info(self.account_id, "Tidak ada task open, skip klaim")
             await activity(self.account_id, "TASK", "SKIP", "Tidak ada task open")
             return next_reset
 
+        log_info(self.account_id, f"Akan klaim {len(tasks)} task open")
         total_reward = 0
+
         for task in tasks:
             title = task.get("title", "").strip()
-            if task.get("kind") in ("link_visit", "telegram_channel"):
+            reward = task.get("reward", 0)
+            kind = task.get("kind")
+            url = task.get("url", "")
+            log_info(self.account_id, f"Mulai klaim: '{title}' (+{reward} VIC)")
+
+            # Auto-join Telegram channel
+            if kind == "telegram_channel" and url:
+                log_info(self.account_id, f"Auto-join channel: {url}")
+                await activity(self.account_id, "TASK", "RUNNING",
+                               f"Join {url[:35]}...")
+                await self.join_telegram_channel(url)
+                await asyncio.sleep(3)
+
+            # Dwell time
+            if kind in ("link_visit", "telegram_channel"):
                 dwell = random.uniform(TASK_DWELL_MIN, TASK_DWELL_MAX)
                 for remaining in range(int(dwell), 0, -1):
                     await activity(self.account_id, "TASK", "WAIT",
                                    f"{title[:35]} | dwell {remaining:02d}s")
                     await asyncio.sleep(1)
+
             result = await self.api.post("/tasks/claim", {"taskId": task["taskId"]},
                                           human_solver=self.obtain_human_pass)
             if result.get("success") is False:
+                err = str(result.get('error'))[:80]
+                log_warn(self.account_id, f"Task '{title}' GAGAL: {err}")
                 await activity(self.account_id, "TASK", "FAILED",
-                               f"{title[:35]} | {str(result.get('error'))[:35]}")
+                               f"{title[:35]} | {err[:35]}")
             else:
                 self._apply_result(result)
-                reward = float(task.get("reward") or 0)
-                total_reward += reward
+                reward_val = float(task.get("reward") or 0)
+                total_reward += reward_val
+                log_info(self.account_id, f"Task '{title}' SUKSES +{reward_val} VIC")
                 await activity(self.account_id, "TASK", "SUCCESS",
-                               f"{title[:35]} +{reward} VIC")
+                               f"{title[:35]} +{reward_val} VIC")
             await asyncio.sleep(3)
 
+        log_info(self.account_id,
+                 f"Total task diklaim: {len(tasks)} | reward: +{total_reward:.2f} VIC")
         await activity(self.account_id, "TASK", "SUCCESS",
                        f"{len(tasks)} task | +{total_reward:.2f} VIC")
         return next_reset
 
-    # ------------------------------------------------------------------
-    # SQUAD
-    # ------------------------------------------------------------------
     async def show_squad(self):
         result = await self.api.get("/friends", human_solver=self.obtain_human_pass)
         friends = result.get("friends", [])
@@ -1325,9 +1318,6 @@ class VictorsClient:
                                f"{label}: +{claimed} VIC")
             await asyncio.sleep(2)
 
-    # ------------------------------------------------------------------
-    # WITHDRAWAL
-    # ------------------------------------------------------------------
     async def get_withdrawals(self):
         result = await self.api.get(
             f"/transactions?limit={WD_HISTORY_LIMIT}",
@@ -1405,9 +1395,6 @@ class VictorsClient:
         await activity(self.account_id, "WITHDRAW", "SUCCESS",
                        f"{amount} VIC → diterima ~{received}")
 
-    # ------------------------------------------------------------------
-    # ACCOUNT ROW
-    # ------------------------------------------------------------------
     async def update_account_row(self, status="READY"):
         mining = self.mining()
         user = self.user()
@@ -1425,13 +1412,7 @@ class VictorsClient:
         )
         await activity(self.account_id, "ACCOUNT", status, detail)
 
-    # ------------------------------------------------------------------
-    # MAIN FLOW
-    # ------------------------------------------------------------------
     async def process(self, state: AccountState) -> int:
-        """
-        Jalankan cycle. Return unix timestamp kapan harus bangun lagi.
-        """
         await self.connect(require_login=True)
         await self.login()
         await self.load_state()
@@ -1443,7 +1424,6 @@ class VictorsClient:
         await self.check_in()
         await self.claim_mining()
 
-        # ⭐ Task — dapatkan info reset
         next_task_reset = await self.complete_tasks()
 
         await self.show_squad()
@@ -1468,14 +1448,12 @@ class VictorsClient:
 
 
 # =====================================================================
-# GET PASS MODE — PERSIS SEPERTI pass-all yang berhasil
+# GET PASS MODE — Chromium bundled
 # =====================================================================
 
 async def get_pass_mode(account_id: str):
-    """Buka Chrome untuk intercept humanPass — pakai initData cache kalau masih valid."""
     print(f"\n🔑 Get Pass — {account_id}\n")
 
-    # ⭐ CEK CACHE INITDATA DULU
     init_data = None
     temp_client = VictorsClient(account_id)
     cached_init = temp_client._load_cached_initdata()
@@ -1494,29 +1472,26 @@ async def get_pass_mode(account_id: str):
             await temp_client.connect(require_login=True)
             init_data = await temp_client.fetch_webapp_query()
             print(f"✅ initData fresh: {len(init_data)} chars")
+        except SystemExit:
+            await activity(account_id, "AUTH", "FAILED", "Fetch initData gagal")
+            raise RuntimeError(f"Fetch initData gagal untuk {account_id}")
         except Exception as e:
             await activity(account_id, "AUTH", "FAILED",
                            f"Fetch initData gagal: {str(e)[:40]}")
             print(f"❌ Fetch initData gagal: {e}")
-            sys.exit(1)
+            raise RuntimeError(f"Fetch initData gagal: {e}")
         finally:
             await temp_client.close()
 
     if not init_data:
         await activity(account_id, "AUTH", "FAILED", "initData kosong")
         print("❌ initData kosong")
-        sys.exit(1)
+        raise RuntimeError("initData kosong")
 
-    await activity(account_id, "AUTH", "RUNNING", "Buka Chrome...")
+    await activity(account_id, "AUTH", "RUNNING", "Buka browser...")
 
-    profile_dir = CHROME_PROFILES_DIR / account_id
+    profile_dir = BROWSER_PROFILES_DIR / account_id
     profile_dir.mkdir(parents=True, exist_ok=True)
-
-    chrome_exe = find_chrome_exe()
-    if not chrome_exe:
-        await activity(account_id, "AUTH", "FAILED", "Chrome tidak ditemukan")
-        print("❌ Chrome tidak ditemukan")
-        sys.exit(1)
 
     try:
         from patchright.async_api import async_playwright
@@ -1532,11 +1507,10 @@ async def get_pass_mode(account_id: str):
     captured = {"human_pass": None}
 
     async with async_playwright() as p:
-        print(f"🚀 Buka Chrome...")
+        print(f"🚀 Buka Chromium...")
 
         context = await p.chromium.launch_persistent_context(
             user_data_dir=str(profile_dir),
-            executable_path=chrome_exe,
             headless=False,
             args=get_launch_args(),
         )
@@ -1544,8 +1518,8 @@ async def get_pass_mode(account_id: str):
 
         if TURNSTILE_WINDOW_MODE == "minimize":
             await asyncio.sleep(1.5)
-            if minimize_windows_chrome():
-                print("   🗕 Chrome di-minimize")
+            if minimize_windows_browser():
+                print("   🗕 Browser di-minimize")
 
         async def on_request(request):
             if captured["human_pass"]:
@@ -1574,8 +1548,9 @@ async def get_pass_mode(account_id: str):
 
         if TURNSTILE_WINDOW_MODE == "minimize":
             await asyncio.sleep(1)
-            minimize_windows_chrome("app.victors.company")
-            minimize_windows_chrome("victors")
+            minimize_windows_browser("app.victors.company")
+            minimize_windows_browser("victors")
+            minimize_windows_browser("chromium")
 
         await activity(account_id, "AUTH", "RUNNING",
                        "Menunggu dashboard / intercept...")
@@ -1603,7 +1578,6 @@ async def get_pass_mode(account_id: str):
                            f"Menunggu verifikasi... ({elapsed}s)")
             await asyncio.sleep(1)
 
-        # Auto-click viewport-relative
         if not captured["human_pass"]:
             await activity(account_id, "AUTH", "RUNNING",
                            "Klik menu trigger /api/me...")
@@ -1640,7 +1614,7 @@ async def get_pass_mode(account_id: str):
         if not human_pass:
             await activity(account_id, "AUTH", "FAILED", "humanPass tidak didapat")
             print("❌ Gagal dapat humanPass")
-            sys.exit(1)
+            raise RuntimeError("Gagal dapat humanPass")
 
         parts = human_pass.split(".")
         expires_at = int(parts[1]) if len(parts) > 1 else int(time.time()) + 86400
@@ -1669,70 +1643,6 @@ async def get_pass_all_mode():
             continue
         except Exception as e:
             print(f"❌ {acc}: {e}")
-
-
-# =====================================================================
-# AUTO GET PASS FOR ALL (dipakai di startup)
-# =====================================================================
-
-async def auto_get_pass_for_all(accounts: list[str]):
-    """Auto refresh .pass yang expired — status di dashboard."""
-    total = len(accounts)
-    refreshed = 0
-    skipped = 0
-    failed = 0
-
-    for idx, acc in enumerate(accounts, 1):
-        pass_path = SESSIONS_DIR / f"{acc}.pass"
-        valid = False
-        expires_at = 0
-        if pass_path.exists():
-            try:
-                data = json.loads(pass_path.read_text(encoding="utf-8"))
-                expires_at = int(data.get("expiresAt", 0))
-                if expires_at - time.time() > 2 * 3600:
-                    valid = True
-            except Exception:
-                pass
-
-        if valid:
-            sisa = (expires_at - time.time()) / 3600
-            await activity(acc, "AUTH", "OK",
-                           f"Pass cache valid ({sisa:.1f}h)")
-            print(f"  [{idx}/{total}] {acc} — ✅ pass valid, skip")
-            skipped += 1
-            continue
-
-        init_path = SESSIONS_DIR / f"{acc}.initdata"
-        if not init_path.exists():
-            await activity(acc, "AUTH", "ERROR", "initData tidak ada")
-            print(f"  [{idx}/{total}] {acc} — ⚠️ no initData")
-            failed += 1
-            continue
-
-        print(f"  [{idx}/{total}] {acc} — 🔄 refresh pass...")
-        await activity(acc, "AUTH", "REFRESH", f"Auto refresh ({idx}/{total})")
-
-        try:
-            await get_pass_mode(acc)
-            refreshed += 1
-        except SystemExit:
-            failed += 1
-            continue
-        except Exception as e:
-            await activity(acc, "AUTH", "FAILED", str(e)[:50])
-            print(f"     ❌ {e}")
-            failed += 1
-            continue
-
-    print()
-    print("=" * 70)
-    print(f"  📊 Auto get pass selesai")
-    print(f"     ✅ Refreshed : {refreshed}")
-    print(f"     ⏭️  Skipped   : {skipped}")
-    print(f"     ❌ Failed    : {failed}")
-    print("=" * 70)
-    print()
 
 
 # =====================================================================
@@ -1808,9 +1718,6 @@ async def run_account_cycle(account_id: str, state_mgr: StateManager) -> int:
 
 async def run_account_worker(account_id: str, state_mgr: StateManager):
     """Worker per akun: get pass dulu (kalau perlu), lalu loop mining dynamic."""
-    # ============================================================
-    # STEP 1: Get pass dulu untuk akun INI
-    # ============================================================
     pass_path = SESSIONS_DIR / f"{account_id}.pass"
     need_pass = True
 
@@ -1828,40 +1735,37 @@ async def run_account_worker(account_id: str, state_mgr: StateManager):
 
     if need_pass:
         await activity(account_id, "AUTH", "REFRESH", "Get pass dulu...")
-        try:
-            await get_pass_mode(account_id)
-        except SystemExit:
-            await activity(account_id, "AUTH", "FAILED", "Get pass gagal")
-        except Exception as e:
-            await activity(account_id, "AUTH", "FAILED", str(e)[:50])
+        for attempt in range(2):
+            try:
+                await get_pass_mode(account_id)
+                break
+            except SystemExit:
+                await activity(account_id, "AUTH", "FAILED",
+                               f"Get pass gagal (percobaan {attempt + 1}/2)")
+                await asyncio.sleep(5)
+            except Exception as e:
+                await activity(account_id, "AUTH", "FAILED", str(e)[:50])
+                log_warn(account_id, f"Get pass gagal (percobaan {attempt + 1}/2): {e}")
+                await asyncio.sleep(5)
+        else:
+            log_warn(account_id, "Get pass gagal 2x, worker tetap jalan tanpa pass")
 
-    # ============================================================
-    # STEP 2: Loop mining dynamic
-    # ============================================================
     while True:
         next_reset = await run_account_cycle(account_id, state_mgr)
 
-        # ⭐ Hitung waktu tunggu
         now = int(time.time())
-
-        # Default: 6 jam (21600 detik)
         default_wait = CYCLE_INTERVAL
 
         if next_reset and next_reset > now:
-            # Ada task yang reset nanti
             wait_secs = next_reset - now
-            # Tapi jangan lebih dari default_wait (biar tetap cek mining)
             wait_secs = min(wait_secs, default_wait)
-            # Tambah margin 30 detik biar server siap
             wait_secs += 30
             log_info(account_id,
-                     f"Next task reset in {wait_secs}s "
-                     f"({wait_secs/3600:.1f}h)")
+                     f"Next task reset in {wait_secs}s ({wait_secs/3600:.1f}h)")
         else:
             wait_secs = default_wait
             log_info(account_id, f"Tidak ada task reset, tunggu {wait_secs/3600:.1f}h")
 
-        # Loop countdown, cek .pass expired di tengah
         remaining = wait_secs
         while remaining > 0:
             pass_path = SESSIONS_DIR / f"{account_id}.pass"
@@ -1930,7 +1834,6 @@ async def run_farmer():
     if not accounts:
         sys.exit(0)
 
-    # Start dashboard dulu — sebelum get pass
     DASHBOARD.accounts = accounts
     for account in accounts:
         DASHBOARD.register(account)
@@ -1939,21 +1842,20 @@ async def run_farmer():
     DASHBOARD.render()
 
     try:
-        # Langsung mining loop — get pass dilakukan di dalam worker per akun
         state_mgr = StateManager(DATA_DIR)
         tasks = []
         for idx, acc in enumerate(accounts):
             delay = idx * STAGGER_SECONDS
             tasks.append(_staggered_worker(acc, state_mgr, delay))
         await asyncio.gather(*tasks)
+    except SystemExit:
+        log_warn("main", "Ada worker yang exit — lanjut worker lain")
+    except Exception as e:
+        log_error("main", "run_farmer exception", e)
     finally:
         DASHBOARD.stop()
         log_info("main", "Main loop selesai")
 
-
-# =====================================================================
-# START
-# =====================================================================
 
 def print_help():
     print(__doc__)
