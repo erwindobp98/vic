@@ -11,7 +11,7 @@ Bot farmer otomatis untuk **Victor's Company** — Telegram Mini App dengan rewa
 - 🔑 **Auto Get humanPass** — Buka Chromium, intercept `X-Human-Pass` header dari network
 - ⛏️ **Auto Mining** — Klaim VIC otomatis saat pending ≥ minimum
 - ✅ **Auto Check-in** — Klaim check-in harian
-- 🎯 **Auto Task** — Klaim task board dengan dwell 11-15 detik (random seperti manusia)
+- 🎯 **Auto Task** — Klaim task board dengan dwell 11-15 detik (random seperti manusia,(kerjakan task manual pertama kali))
 - 👥 **Auto Squad** — Klaim hiring bonus & komisi referral
 - 💸 **Auto Withdraw** — Cek wallet terhubung dulu, buffer 200 di atas minimum
 - 🔄 **Dynamic Loop** — Bangun saat task reset (dari `availableAt` API), bukan interval tetap
