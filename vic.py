@@ -121,7 +121,12 @@ DEFAULT_CONFIG = {
         "expiry_margin_seconds": 600,
         "auto_refresh_threshold_hours": 3,
     },
-    "mining": {"minimum_claimable": 1.0},
+    "mining": {
+        "minimum_claimable": 1.0,
+        "claim_retry_max": 5,
+        "claim_retry_delay_min": 30,
+        "claim_retry_delay_max": 90,
+    },
     "tasks": {"dwell_seconds_min": 11, "dwell_seconds_max": 15},
     "withdrawal": {
         "minimum_default": 1000,
@@ -214,6 +219,10 @@ HUMAN_PASS_AUTO_REFRESH_HOURS = float(
 )
 
 MINIMUM_CLAIMABLE_MINING = float(CFG["mining"]["minimum_claimable"])
+MINING_CLAIM_RETRY_MAX = int(CFG["mining"].get("claim_retry_max", 5))
+MINING_CLAIM_RETRY_DELAY_MIN = int(CFG["mining"].get("claim_retry_delay_min", 30))
+MINING_CLAIM_RETRY_DELAY_MAX = int(CFG["mining"].get("claim_retry_delay_max", 90))
+
 TASK_DWELL_MIN = float(CFG["tasks"]["dwell_seconds_min"])
 TASK_DWELL_MAX = float(CFG["tasks"]["dwell_seconds_max"])
 
@@ -1039,9 +1048,6 @@ class VictorsClient:
         if not self.tg:
             return False
 
-        # Extract username dari URL
-        # https://t.me/grmdrop → grmdrop
-        # https://t.me/victors_company/37 → victors_company
         try:
             path = channel_url.rstrip("/").split("/")
             username = None
@@ -1054,7 +1060,6 @@ class VictorsClient:
         except Exception:
             return False
 
-        # Skip kalau sudah pernah join di sesi ini
         if username in self._joined_channels:
             return True
 
@@ -1155,25 +1160,82 @@ class VictorsClient:
         daily = Decimal(str(mining.get("accrualDaily") or mining.get("dailyOutput") or 0))
         return accrued + daily * Decimal(elapsed_ms) / Decimal(86400 * 1000)
 
+    # ------------------------------------------------------------------
+    # MINING CLAIM — dengan retry 503
+    # ------------------------------------------------------------------
     async def claim_mining(self):
         level = int(self.mining().get("level") or 0)
         if level <= 0:
             await activity(self.account_id, "MINING", "SKIP", "Wallet belum terhubung")
             return
+
         pending = self.get_mined_amount()
         if pending < Decimal(str(MINIMUM_CLAIMABLE_MINING)):
             await activity(self.account_id, "MINING", "SKIP",
                            f"Pending {pending:.4f} < {MINIMUM_CLAIMABLE_MINING}")
             return
+
         await activity(self.account_id, "MINING", "CLAIM", f"Pending={pending:.4f} VIC")
-        result = await self.api.post("/mining/claim", human_solver=self.obtain_human_pass)
-        if result.get("success") is False:
-            await activity(self.account_id, "MINING", "FAILED",
-                           str(result.get("error"))[:60])
-            return
-        self._apply_result(result)
-        claimed = result.get("claimed", pending)
-        await activity(self.account_id, "MINING", "SUCCESS", f"+{claimed} VIC")
+
+        # Retry loop untuk handle HTTP 503 (on-chain verify sementara gagal)
+        for attempt in range(1, MINING_CLAIM_RETRY_MAX + 1):
+            result = await self.api.post(
+                "/mining/claim",
+                human_solver=self.obtain_human_pass,
+            )
+
+            if result.get("success") is not False:
+                # Sukses
+                self._apply_result(result)
+                claimed = result.get("claimed", pending)
+                log_info(self.account_id,
+                         f"Claim mining SUKSES +{claimed} VIC (attempt {attempt})")
+                await activity(self.account_id, "MINING", "SUCCESS",
+                               f"+{claimed} VIC")
+                return
+
+            err = str(result.get("error") or "").lower()
+
+            # Cek apakah error sementara
+            is_transient = (
+                "could not verify" in err
+                or "try again" in err
+                or "temporarily" in err
+                or "503" in err
+                or "service unavailable" in err
+                or "on-chain holding" in err
+            )
+
+            if not is_transient:
+                # Error permanen — skip
+                log_warn(self.account_id,
+                         f"Claim mining gagal (non-transient): {err[:80]}")
+                await activity(self.account_id, "MINING", "FAILED", err[:60])
+                return
+
+            # Error sementara — retry dengan delay random
+            if attempt < MINING_CLAIM_RETRY_MAX:
+                delay = random.uniform(
+                    MINING_CLAIM_RETRY_DELAY_MIN,
+                    MINING_CLAIM_RETRY_DELAY_MAX,
+                )
+                log_warn(self.account_id,
+                         f"Claim mining 503 (attempt {attempt}/{MINING_CLAIM_RETRY_MAX}), "
+                         f"retry in {delay:.0f}s: {err[:60]}")
+                await activity(self.account_id, "MINING", "RETRY",
+                               f"attempt {attempt}/{MINING_CLAIM_RETRY_MAX} | wait {delay:.0f}s")
+
+                # Countdown di dashboard
+                remaining = int(delay)
+                while remaining > 0:
+                    await asyncio.sleep(min(5, remaining))
+                    remaining -= 5
+
+        # Semua retry habis
+        log_warn(self.account_id,
+                 f"Claim mining GAGAL setelah {MINING_CLAIM_RETRY_MAX} percobaan")
+        await activity(self.account_id, "MINING", "FAILED",
+                       f"Gagal setelah {MINING_CLAIM_RETRY_MAX} percobaan")
 
     async def complete_tutorial(self):
         if self.user().get("tutorialDone"):
