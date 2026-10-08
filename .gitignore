@@ -1,0 +1,27 @@
+# Secrets
+sessions/
+data/
+chromium-profiles/
+chrome-profiles/
+config.json
+error.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
