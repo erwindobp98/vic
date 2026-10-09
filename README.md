@@ -37,7 +37,7 @@ Bot farmer otomatis untuk **Victor's Company** — Telegram Mini App dengan rewa
 ### 1. Clone Repository
 
 ```bash
-git clone https://github.com/USERNAME/vic.git
+git clone https://github.com/erwindobp98/vic.git
 cd vic
 ```
 
