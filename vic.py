@@ -111,7 +111,7 @@ DEFAULT_CONFIG = {
         #   "normal"    → Chrome tampil di layar (default, paling stabil)
         #   "minimize"  → Chrome tampil sebentar lalu minimize otomatis (via API)
         #   "offscreen" → Chrome diposisikan di luar layar (kadang Cloudflare curiga)
-        "window_mode": "offscreen",
+        "window_mode": "headless",
         "timeout": 60,
         "skip_if_fails": True,
         "max_concurrent": 1,
