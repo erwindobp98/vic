@@ -1,5 +1,5 @@
 """
-Victor's Company Farmer — Single File Python (Chromium version)
+Victor's Company Farmer
 
 Commands:
   python vic.py              → Auto farmer (initData → get pass → mining → loop)
@@ -107,10 +107,6 @@ DEFAULT_CONFIG = {
         "site_key": "0x4AAAAAAFD0KRgPRFVwDvgn",
         "page_url": "https://app.victors.company/",
         "headless": False,
-        # Pilihan perilaku window Chrome:
-        #   "normal"    → Chrome tampil di layar (default, paling stabil)
-        #   "minimize"  → Chrome tampil sebentar lalu minimize otomatis (via API)
-        #   "offscreen" → Chrome diposisikan di luar layar (kadang Cloudflare curiga)
         "window_mode": "headless",
         "timeout": 60,
         "skip_if_fails": True,
@@ -124,8 +120,8 @@ DEFAULT_CONFIG = {
     "mining": {
         "minimum_claimable": 1.0,
         "claim_retry_max": 5,
-        "claim_retry_delay_min": 30,
-        "claim_retry_delay_max": 90,
+        "claim_retry_delay_min": 5,
+        "claim_retry_delay_max": 15,
     },
     "tasks": {"dwell_seconds_min": 11, "dwell_seconds_max": 15},
     "withdrawal": {
