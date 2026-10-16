@@ -214,6 +214,7 @@ Pada `turnstile.window_mode`, pilih:
 ```
 victors-farmer/
 ├── vic.py                     # Script utama
+├── .gitignore
 ├── config.json                # Konfigurasi (otomatis dibuat)
 ├── requirements.txt           # Dependencies
 ├── error.log                  # Log error (auto)
